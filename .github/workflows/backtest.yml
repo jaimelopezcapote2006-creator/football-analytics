@@ -1,0 +1,46 @@
+name: Historical backtest
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/backtest.yml"
+      - "src/**"
+      - "requirements.txt"
+  schedule:
+    - cron: "17 5 * * 1"
+permissions:
+  contents: read
+  actions: write
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Download Openplay historical data
+        run: |
+          mkdir -p data
+          BASE="https://github.com/nlbair/openplay/releases/download/data-v0.1.0"
+          curl -fL --retry 3 "$BASE/matches.parquet" -o data/matches.parquet
+          curl -fL --retry 3 "$BASE/team_match_stats.parquet" -o data/team_match_stats.parquet
+          curl -fL --retry 3 "$BASE/coverage.csv" -o data/coverage.csv
+          curl -fL --retry 3 "$BASE/data_issues.csv" -o data/data_issues.csv
+          sha256sum data/*
+      - name: Run chronological model fitting and backtest
+        run: python src/backtest.py
+      - name: Upload aggregate results and SQLite database
+        uses: actions/upload-artifact@v4
+        with:
+          name: football-analytics-results
+          path: results/
+          if-no-files-found: error
+          retention-days: 90
