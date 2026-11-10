@@ -117,55 +117,59 @@ def main():
     history=defaultdict(lambda: deque(maxlen=10))
     comp_history=defaultdict(lambda: deque(maxlen=300))
     records=[]
-    for m in matches.itertuples(index=False):
-        hid=int(m.home_team_id); aid=int(m.away_team_id); comp=str(m.comp)
-        hh=list(history[hid]); ah=list(history[aid])
-        # Require enough past games for both teams to avoid cold-start leakage/guessing.
-        if len(hh)>=MIN_TEAM_MATCHES and len(ah)>=MIN_TEAM_MATCHES:
-            ch=list(comp_history[comp])
-            comp_home=float(np.mean([x[0] for x in ch])) if len(ch)>=20 else 1.45
-            comp_away=float(np.mean([x[1] for x in ch])) if len(ch)>=20 else 1.20
-            h_gf=float(np.mean([x["gf"] for x in hh])); h_ga=float(np.mean([x["ga"] for x in hh]))
-            a_gf=float(np.mean([x["gf"] for x in ah])); a_ga=float(np.mean([x["ga"] for x in ah]))
-            h_wgf=weighted_form([x["gf"] for x in hh]); h_wga=weighted_form([x["ga"] for x in hh])
-            a_wgf=weighted_form([x["gf"] for x in ah]); a_wga=weighted_form([x["ga"] for x in ah])
-            # Fixed-rate V1.0: team scoring and opponent concession blended with competition baselines.
-            v10_h=max(.10, .5*h_gf + .5*a_ga)
-            v10_a=max(.10, .5*a_gf + .5*h_ga)
-            # Normalize by competition scoring environment.
-            v10_h=max(.10,v10_h * (comp_home/max(.1,(comp_home+comp_away)/2)))
-            v10_a=max(.10,v10_a * (comp_away/max(.1,(comp_home+comp_away)/2)))
-            # V1.1 features: weighted form, long-run form, competition scoring baseline.
-            xh=[math.log1p(h_wgf),math.log1p(h_wga),math.log1p(a_wgf),math.log1p(a_wga),
-                math.log1p(comp_home),math.log1p(comp_away)]
-            xa=[math.log1p(a_wgf),math.log1p(a_wga),math.log1p(h_wgf),math.log1p(h_wga),
-                math.log1p(comp_away),math.log1p(comp_home)]
-            hg=int(m.home_score_90); ag=int(m.away_score_90)
-            rec={"match_id":int(m.match_id),"date":m.date.date().isoformat(),"competition":str(m.competition),
-                 "comp":comp,"home_team":str(m.home_team),"away_team":str(m.away_team),
-                 "actual_home_goals":hg,"actual_away_goals":ag,
-                 "actual":"H" if hg>ag else ("D" if hg==ag else "A"),
-                 "v10_lambda_home":v10_h,"v10_lambda_away":v10_a,
-                 "v11_lambda_home":np.nan,"v11_lambda_away":np.nan,
-                 "features_home":xh,"features_away":xa}
-            records.append(rec)
-        # Add this match to team histories only AFTER its pre-match features are captured.
-        hrow=stat_lookup.get((int(m.match_id),hid),{})
-        arow=stat_lookup.get((int(m.match_id),aid),{})
-        history[hid].append({"gf":float(m.home_score_90),"ga":float(m.away_score_90)})
-        history[aid].append({"gf":float(m.away_score_90),"ga":float(m.home_score_90)})
-        comp_history[comp].append((float(m.home_score_90),float(m.away_score_90)))
+    # Process all fixtures on a calendar date as one batch. No result from a
+    # same-day match is allowed to enter another same-day fixture's features.
+    for day, day_matches in matches.groupby("date",sort=True):
+        day_rows=list(day_matches.itertuples(index=False))
+        for m in day_rows:
+            hid=int(m.home_team_id); aid=int(m.away_team_id); comp=str(m.comp)
+            hh=list(history[hid]); ah=list(history[aid])
+            if len(hh)>=MIN_TEAM_MATCHES and len(ah)>=MIN_TEAM_MATCHES:
+                ch=list(comp_history[comp])
+                comp_home=float(np.mean([x[0] for x in ch])) if len(ch)>=20 else 1.45
+                comp_away=float(np.mean([x[1] for x in ch])) if len(ch)>=20 else 1.20
+                h_gf=float(np.mean([x["gf"] for x in hh])); h_ga=float(np.mean([x["ga"] for x in hh]))
+                a_gf=float(np.mean([x["gf"] for x in ah])); a_ga=float(np.mean([x["ga"] for x in ah]))
+                h_wgf=weighted_form([x["gf"] for x in hh]); h_wga=weighted_form([x["ga"] for x in hh])
+                a_wgf=weighted_form([x["gf"] for x in ah]); a_wga=weighted_form([x["ga"] for x in ah])
+                v10_h=max(.10, .5*h_gf + .5*a_ga)
+                v10_a=max(.10, .5*a_gf + .5*h_ga)
+                v10_h=max(.10,v10_h * (comp_home/max(.1,(comp_home+comp_away)/2)))
+                v10_a=max(.10,v10_a * (comp_away/max(.1,(comp_home+comp_away)/2)))
+                xh=[math.log1p(h_wgf),math.log1p(h_wga),math.log1p(a_wgf),math.log1p(a_wga),
+                    math.log1p(comp_home),math.log1p(comp_away)]
+                xa=[math.log1p(a_wgf),math.log1p(a_wga),math.log1p(h_wgf),math.log1p(h_wga),
+                    math.log1p(comp_away),math.log1p(comp_home)]
+                hg=int(m.home_score_90); ag=int(m.away_score_90)
+                records.append({"match_id":int(m.match_id),"date":m.date.date().isoformat(),"competition":str(m.competition),
+                    "comp":comp,"home_team":str(m.home_team),"away_team":str(m.away_team),
+                    "actual_home_goals":hg,"actual_away_goals":ag,
+                    "actual":"H" if hg>ag else ("D" if hg==ag else "A"),
+                    "v10_lambda_home":v10_h,"v10_lambda_away":v10_a,
+                    "v11_lambda_home":np.nan,"v11_lambda_away":np.nan,
+                    "features_home":xh,"features_away":xa})
+        # Update histories only after every fixture on this date has been forecast.
+        for m in day_rows:
+            hid=int(m.home_team_id); aid=int(m.away_team_id); comp=str(m.comp)
+            history[hid].append({"gf":float(m.home_score_90),"ga":float(m.away_score_90)})
+            history[aid].append({"gf":float(m.away_score_90),"ga":float(m.home_score_90)})
+            comp_history[comp].append((float(m.home_score_90),float(m.away_score_90)))
 
     df=pd.DataFrame(records)
     if len(df)<500: raise RuntimeError(f"Too few matches after warm-up: {len(df)}")
-    split=int(len(df)*0.70)
-    if split<200 or len(df)-split<100: raise RuntimeError("Not enough rows for chronological train/test split")
+    # Split on a unique calendar date, never through fixtures played on the same day.
+    unique_dates=sorted(df["date"].unique())
+    split_date=unique_dates[int(len(unique_dates)*0.70)]
+    train_mask=(df["date"]<split_date).to_numpy()
+    test_mask=~train_mask
+    split=int(train_mask.sum())
+    if split<200 or int(test_mask.sum())<100: raise RuntimeError("Not enough rows for chronological train/test split")
     # Fit only on the first 70%; the final 30% is strictly out-of-time evaluation.
     Xh=np.asarray([r["features_home"] for r in records],dtype=float)
     Xa=np.asarray([r["features_away"] for r in records],dtype=float)
     yh=df.actual_home_goals.to_numpy(); ya=df.actual_away_goals.to_numpy()
-    model_h=PoissonRegressor(alpha=0.15,max_iter=500).fit(Xh[:split],yh[:split])
-    model_a=PoissonRegressor(alpha=0.15,max_iter=500).fit(Xa[:split],ya[:split])
+    model_h=PoissonRegressor(alpha=0.15,max_iter=500).fit(Xh[train_mask],yh[train_mask])
+    model_a=PoissonRegressor(alpha=0.15,max_iter=500).fit(Xa[train_mask],ya[train_mask])
     df["v11_lambda_home"]=np.clip(model_h.predict(Xh),.05,5.5)
     df["v11_lambda_away"]=np.clip(model_a.predict(Xa),.05,5.5)
 
@@ -179,7 +183,7 @@ def main():
         df[f"{prefix}_over25_yes"]=o;df[f"{prefix}_under25_yes"]=u
         df[f"{prefix}_btts_yes"]=b;df[f"{prefix}_btts_no"]=nb
 
-    test=df.iloc[split:].copy()
+    test=df.loc[test_mask].copy()
     metrics={"dataset":"Openplay data-v0.1.0","scope":sorted(LEAGUES),"eligible_matches_after_warmup":int(len(df)),
              "train_matches":int(split),"test_matches":int(len(test)),
              "train_start":str(df.iloc[0].date),"train_end":str(df.iloc[split-1].date),
