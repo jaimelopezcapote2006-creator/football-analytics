@@ -480,7 +480,7 @@ def main():
 ## Odds and value evaluation
 {json.dumps(odds_summary,indent=2)}
 - Odds CSV schema: match_id, market, selection, odds, bookmaker, captured_at.
-- Markets: 1x2 (home/draw/away), over25/under25, btts_yes/btts_no, plus shots_22_5, sot_8_5, corners_9_5, cards_4_5, fouls_22_5 with selection over/under.
+- Markets: 1x2 (home/draw/away), over25/under25, btts_yes/btts_no, plus shots_22.5, sot_8.5, corners_9.5, cards_4.5, fouls_22.5 with selection over/under.
 - A value bet requires estimated expected return >= 3% at the supplied price. This is a research threshold, not a guarantee.
 
 ## Interpretation
