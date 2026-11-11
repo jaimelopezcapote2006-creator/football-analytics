@@ -53,3 +53,11 @@ This is a first reproducible baseline, not the final multi-market model. It does
 - To enable it, add a GitHub Actions repository secret named `ODDS_API_KEY`. Without it, the workflow records a clear `not_configured` audit and continues.
 - This is an EU market-consensus feed, **not Bet365 Spain**. The free feed's bookmaker coverage does not provide Bet365 Spain, and these snapshots are not yet converted into historical match-id rows for ROI. Bet365 prices must still be imported separately from verified captures.
 - The provider advertises a free allowance; check current plan limits before enabling frequent pulls. API usage is reported in `results/odds_api_audit.json`.
+
+
+## Upcoming fixture predictions
+- `src/predict_upcoming.py` selects the xG/goals/Elo challenger on a validation period, refits it on all historical rows, replays 2026/27 current-season results and predicts upcoming top-five-league fixtures.
+- Team-name matching is fuzzy but audited; unresolved clubs and fixtures without five historical matches are marked and excluded from recommendations.
+- Outputs: `results/upcoming_predictions.csv`, `results/upcoming_prediction_audit.json`.
+- Fair odds and minimum odds for a 3% expected edge are included for 1X2, O/U 1.5/2.5/3.5 and BTTS. These are model prices, not bookmaker prices.
+- Verified odds can be entered in `data/upcoming_odds.csv`. Accepted markets: `1x2` + `home/draw/away`; `over_2.5` + `over`; `under_2.5` + `under`; `btts` + `yes/no`. The pipeline outputs expected value and a 3% edge flag in `results/upcoming_value_candidates.csv`. Never enter guessed prices.
