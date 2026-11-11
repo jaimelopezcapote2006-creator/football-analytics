@@ -45,6 +45,24 @@ def score_probs(lh, la):
     p2=float(np.triu(grid,1).sum())
     return p1,px,p2,grid
 
+def dc_grid(lh, la, rho):
+    """Dixon-Coles low-score correction over a truncated independent-Poisson grid."""
+    h=np.arange(MAX_GOALS+1)
+    ph=poisson.pmf(h, max(0.05,float(lh)))
+    pa=poisson.pmf(h, max(0.05,float(la)))
+    grid=np.outer(ph,pa)
+    # tau(x,y): 00, 01, 10 and 11 are the only adjusted scorelines.
+    corrections={
+        (0,0): 1.0-float(lh)*float(la)*float(rho),
+        (0,1): 1.0+float(lh)*float(rho),
+        (1,0): 1.0+float(la)*float(rho),
+        (1,1): 1.0-float(rho),
+    }
+    for (hg,ag),factor in corrections.items():
+        grid[hg,ag] *= max(1e-10,factor)
+    total=float(grid.sum())
+    return grid/total if total>0 else np.outer(ph/ph.sum(),pa/pa.sum())
+
 def market_probs(grid):
     over=0.0; btts=0.0
     for h in range(grid.shape[0]):
