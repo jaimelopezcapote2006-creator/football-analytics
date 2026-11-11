@@ -55,7 +55,7 @@ def feats(h,a,day,eh,ea,lh,la):
  out.extend([mean(h,"xg",10,1.3)-mean(h,"gf",10,1.3),
              mean(a,"xg",10,1.3)-mean(a,"gf",10,1.3),
              mean(h,"xga",10,1.3)-mean(h,"ga",10,1.3),
-             mean(a,"xga",10,1.3)-mean(a,"ga",1.3)])
+             mean(a,"xga",10,1.3)-mean(a,"ga",10,1.3)])
  return out
 def probs(lh,la):
  vals=np.arange(12); ph=poisson.pmf(vals,max(.05,lh)); pa=poisson.pmf(vals,max(.05,la))
@@ -200,6 +200,25 @@ def main():
   out.append(rec)
  result=pd.DataFrame(out)
  result.to_csv(OUT/"upcoming_predictions.csv",index=False)
+ # Optional manually verified bookmaker prices; empty template means no value/ROI claim.
+ odds_path=Path("data/upcoming_odds.csv")
+ value_rows=[]
+ if odds_path.exists():
+  odds=pd.read_csv(odds_path)
+  for q in odds.to_dict("records"):
+   mask=(result.date.astype(str)==str(q.get("date",""))) & (result.home==q.get("home")) & (result.away==q.get("away")) & (result.status=="ready")
+   if not mask.any(): continue
+   r=result.loc[mask].iloc[0]; market=str(q.get("market","")).lower(); sel=str(q.get("selection","")).lower()
+   col={"1x2_home":"p_home","1x2_draw":"p_draw","1x2_away":"p_away",
+        "over_2.5":"p_over_2_5","under_2.5":"p_under_2_5",
+        "btts_yes":"p_btts_yes","btts_no":"p_btts_no"}.get(market+"_"+sel) or ({"over_2.5":"p_over_2_5","under_2.5":"p_under_2_5"}.get(market) if sel in ("","over","under") else None)
+   if col is None or pd.isna(q.get("odds")): continue
+   p=float(r[col]); price_now=float(q["odds"])
+   value_rows.append({"date":r.date,"home":r.home,"away":r.away,"market":market,"selection":sel,
+       "bookmaker":q.get("bookmaker",""),"odds":price_now,"probability":p,"fair_odds":price(p),
+       "min_odds_3pct_edge":1.03*price(p),"expected_value_pct":100*(p*price_now-1),
+       "value_3pct_edge":bool(price_now>=1.03*price(p)),"captured_at":q.get("captured_at","")})
+ pd.DataFrame(value_rows).to_csv(OUT/"upcoming_value_candidates.csv",index=False)
  audit={"historical_training_rows":len(df),"validation_choice_mae":choices,"selected_model":winner,
         "historical_teams":len(name_to_id),"current_results":len(cur),"current_results_mapped":mapped,
         "current_team_mapping_unresolved":sorted(set(unmapped)|unresolved),
