@@ -149,10 +149,75 @@ def main():
     # Constant training-frequency baseline and ML scores, evaluated on same untouched test dates.
     freq=pd.Series(df.loc[train|val,"actual"]).value_counts(normalize=True)
     base=np.tile([freq.get("H",0),freq.get("D",0),freq.get("A",0)],(len(pred),1))
+    # Final fair comparison: both feature sets are refit on train+validation and
+    # evaluated on the exact same untouched test dates. Dixon-Coles rho is
+    # estimated only from validation forecasts produced by train-only models.
+    def dc_grid(lh,la,rho):
+        vals=np.arange(11)
+        ph0=poisson.pmf(vals,max(.05,float(lh))); pa0=poisson.pmf(vals,max(.05,float(la)))
+        g=np.outer(ph0,pa0)
+        for (i,j),factor in {
+            (0,0):1-float(lh)*float(la)*rho,
+            (0,1):1+float(lh)*rho,
+            (1,0):1+float(la)*rho,
+            (1,1):1-rho}.items():
+            g[i,j]*=max(1e-10,factor)
+        g/=g.sum()
+        return g
+    def score_grid(lh,la,rho=None):
+        if rho is None:
+            vals=np.arange(11)
+            g=np.outer(poisson.pmf(vals,max(.05,float(lh))),poisson.pmf(vals,max(.05,float(la))))
+            g/=g.sum()
+            return g
+        return dc_grid(lh,la,rho)
+    def evaluate_pair(name,mat):
+        # Fit on train only to obtain honest validation lambdas for rho fitting.
+        vh,va=fit_pair(mat,train)
+        vph=np.clip(vh.predict(mat[val]),.05,5.5); vpa=np.clip(va.predict(mat[val]),.05,5.5)
+        v_actual_h=yh[val].astype(int); v_actual_a=ya[val].astype(int)
+        def rho_nll(rho):
+            total=0.0
+            for lh0,la0,gh,ga in zip(vph,vpa,v_actual_h,v_actual_a):
+                if gh<11 and ga<11:
+                    total-=math.log(max(1e-12,dc_grid(lh0,la0,float(rho))[gh,ga]))
+            return total
+        from scipy.optimize import minimize_scalar
+        rho=float(minimize_scalar(rho_nll,bounds=(-0.15,0.15),method="bounded").x)
+        # Refit both candidates on the same train+validation rows.
+        th,ta=fit_pair(mat,fit)
+        tph=np.clip(th.predict(mat[test]),.05,5.5); tpa=np.clip(ta.predict(mat[test]),.05,5.5)
+        actual_h=yh[test].astype(int); actual_a=ya[test].astype(int)
+        actual_out=np.where(actual_h>actual_a,0,np.where(actual_h==actual_a,1,2))
+        one=np.eye(3)[actual_out]
+        metrics={}
+        for variant,r in [("poisson",None),("dixon_coles",rho)]:
+            pmat=[]; over=[]; btts=[]
+            for lh0,la0 in zip(tph,tpa):
+                g=score_grid(lh0,la0,r)
+                pmat.append([float(np.tril(g,-1).sum()),float(np.trace(g)),float(np.triu(g,1).sum())])
+                over.append(float(sum(g[i,j] for i in range(11) for j in range(11) if i+j>=3)))
+                btts.append(float(g[1:,1:].sum()))
+            pmat=np.asarray(pmat); over=np.asarray(over); btts=np.asarray(btts)
+            yover=((actual_h+actual_a)>=3).astype(int)
+            ybtts=((actual_h>0)&(actual_a>0)).astype(int)
+            metrics[variant]={
+                "goals_total_mae":float(mean_absolute_error(actual_h+actual_a,tph+tpa)),
+                "1x2_brier":float(np.mean(np.sum((pmat-one)**2,axis=1))),
+                "1x2_log_loss":float(log_loss(actual_out,np.clip(pmat,1e-8,1),labels=[0,1,2])),
+                "over25_brier":float(np.mean((over-yover)**2)),
+                "over25_log_loss":float(log_loss(yover,np.clip(over,1e-8,1-1e-8),labels=[0,1])),
+                "btts_brier":float(np.mean((btts-ybtts)**2)),
+                "btts_log_loss":float(log_loss(ybtts,np.clip(btts,1e-8,1-1e-8),labels=[0,1]))}
+        return {"validation_fitted_rho":rho,"test":metrics}
+    same_test_comparison={
+        "goals_elo":evaluate_pair("goals_elo",Xg),
+        "xg_stats_elo":evaluate_pair("xg_stats_elo",X)}
     result={"dataset":"Openplay v0.1.0 + player_match_stats","rows":int(len(df)),
       "train":int(train.sum()),"validation":int(val.sum()),"untouched_test":int(test.sum()),
       "train_end":str(d1),"validation_end":str(d2),"test_start":str(d2),
       "validation_candidates":candidates,"selected_on_validation_only":winner,
+      "same_untouched_test_comparison":same_test_comparison,
       "test":{"home_goals_mae":float(mean_absolute_error(df.loc[test,"yh"],pred.lambda_home)),
               "away_goals_mae":float(mean_absolute_error(df.loc[test,"ya"],pred.lambda_away)),
               "total_goals_mae":float(mean_absolute_error(df.loc[test,"yh"]+df.loc[test,"ya"],pred.lambda_home+pred.lambda_away)),
@@ -160,7 +225,9 @@ def main():
               "1x2_log_loss":float(log_loss(yidx,probs,labels=[0,1,2])),
               "constant_baseline_1x2_brier":float(np.mean(np.sum((base-onehot)**2,axis=1))),
               "constant_baseline_1x2_log_loss":float(log_loss(yidx,base,labels=[0,1,2]))},
-      "warning":"This is a challenger, not automatically promoted. The final test is untouched during candidate selection. xG coverage is partial; missing xG is retained as missing then defaulted only within historical feature summaries."}
+      "warning":"Research challenger only; no production model is changed. Both feature sets and both score-grid variants are compared on the same untouched chronological test. Dixon-Coles rho is fitted on validation forecasts only. xG coverage is partial."}
+    (OUT/"xg_enhanced_metrics.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
+    print(json.dumps(result,indent=2))
     (OUT/"xg_enhanced_metrics.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
     print(json.dumps(result,indent=2))
 if __name__=="__main__": main()
