@@ -26,12 +26,46 @@ def safe_float(x, default):
         return default
 
 def weighted_form(values):
-    vals=list(values)
+    vals=[float(v) for v in values if v is not None and np.isfinite(safe_float(v,np.nan))]
     if len(vals) >= 10:
         return 0.55*float(np.mean(vals[-5:])) + 0.45*float(np.mean(vals[-10:-5]))
     if vals:
         return float(np.mean(vals))
     return float("nan")
+
+STAT_TARGETS = {
+    "shots": "shots",
+    "sot": "shots_on_target",
+    "corners": "corners",
+    "cards": "cards",
+    "fouls": "fouls",
+}
+STAT_LINES = {
+    "shots": [20.5, 21.5, 22.5, 23.5, 24.5],
+    "sot": [6.5, 7.5, 8.5, 9.5],
+    "corners": [7.5, 8.5, 9.5, 10.5, 11.5],
+    "cards": [2.5, 3.5, 4.5, 5.5],
+    "fouls": [19.5, 21.5, 22.5, 23.5, 25.5],
+}
+
+def stat_feature_vector(home_hist, away_hist):
+    out=[]
+    for key in STAT_TARGETS:
+        out.extend([
+            weighted_form([x.get(key+"_for",np.nan) for x in home_hist]),
+            weighted_form([x.get(key+"_against",np.nan) for x in home_hist]),
+            weighted_form([x.get(key+"_for",np.nan) for x in away_hist]),
+            weighted_form([x.get(key+"_against",np.nan) for x in away_hist]),
+        ])
+    return out
+
+def add_stat_market_probabilities(frame, stat, total_lambda):
+    for line in STAT_LINES[stat]:
+        suffix=str(line).replace(".","_")
+        over=f"{stat}_over_{suffix}"
+        prob=np.clip(poisson.sf(int(math.floor(line)),np.maximum(0.01,total_lambda)),0,1)
+        frame[over]=prob
+        frame[f"{stat}_under_{suffix}"]=1.0-prob
 
 def score_probs(lh, la):
     h=np.arange(MAX_GOALS+1)
@@ -110,6 +144,7 @@ def main():
     ap.add_argument("--matches",default=str(ROOT/"matches.parquet"))
     ap.add_argument("--team-stats",default=str(ROOT/"team_match_stats.parquet"))
     ap.add_argument("--coverage",default=str(ROOT/"coverage.csv"))
+    ap.add_argument("--odds",default=str(ROOT/"odds.csv"))
     args=ap.parse_args()
     OUT.mkdir(exist_ok=True)
     matches=pd.read_parquet(args.matches)
@@ -128,10 +163,11 @@ def main():
     stat_lookup={}
     for r in team_stats.itertuples(index=False):
         stat_lookup[(int(r.match_id),int(r.team_id))]={
-            "gf":float(r.goals_for),"ga":float(r.goals_against),
-            "shots":float(r.shots),"sot":float(r.shots_on_target),
-            "corners":float(r.corners_taken),"cards":float(r.yellow_cards+r.second_yellows+r.red_cards),
-            "fouls":float(r.fouls_committed)
+            "gf":safe_float(r.goals_for,np.nan),"ga":safe_float(r.goals_against,np.nan),
+            "shots":safe_float(r.shots,np.nan),"sot":safe_float(r.shots_on_target,np.nan),
+            "corners":safe_float(r.corners_taken,np.nan),
+            "cards":safe_float(r.yellow_cards,np.nan)+safe_float(r.second_yellows,0.0)+safe_float(r.red_cards,0.0),
+            "fouls":safe_float(r.fouls_committed,np.nan)
         }
 
     history=defaultdict(lambda: deque(maxlen=10))
@@ -161,19 +197,37 @@ def main():
                 xa=[math.log1p(a_wgf),math.log1p(a_wga),math.log1p(h_wgf),math.log1p(h_wga),
                     math.log1p(comp_away),math.log1p(comp_home)]
                 hg=int(m.home_score_90); ag=int(m.away_score_90)
-                records.append({"match_id":int(m.match_id),"date":m.date.date().isoformat(),"competition":str(m.competition),
+                hs=stat_lookup.get((int(m.match_id),hid),{})
+                aws=stat_lookup.get((int(m.match_id),aid),{})
+                sfh=stat_feature_vector(hh,ah)
+                sfa=stat_feature_vector(ah,hh)
+                rec={"match_id":int(m.match_id),"date":m.date.date().isoformat(),"competition":str(m.competition),
                     "comp":comp,"home_team":str(m.home_team),"away_team":str(m.away_team),
                     "actual_home_goals":hg,"actual_away_goals":ag,
                     "actual":"H" if hg>ag else ("D" if hg==ag else "A"),
                     "v10_lambda_home":v10_h,"v10_lambda_away":v10_a,
                     "v11_lambda_home":np.nan,"v11_lambda_away":np.nan,
                     "v12_lambda_home":np.nan,"v12_lambda_away":np.nan,
-                    "features_home":xh,"features_away":xa})
+                    "features_home":xh,"features_away":xa,
+                    "features_stat_home":sfh,"features_stat_away":sfa}
+                for sk in STAT_TARGETS:
+                    rec[f"actual_{sk}_home"]=safe_float(hs.get(sk),np.nan)
+                    rec[f"actual_{sk}_away"]=safe_float(aws.get(sk),np.nan)
+                records.append(rec)
         # Update histories only after every fixture on this date has been forecast.
         for m in day_rows:
             hid=int(m.home_team_id); aid=int(m.away_team_id); comp=str(m.comp)
-            history[hid].append({"gf":float(m.home_score_90),"ga":float(m.away_score_90)})
-            history[aid].append({"gf":float(m.away_score_90),"ga":float(m.home_score_90)})
+            hs=stat_lookup.get((int(m.match_id),hid),{})
+            aws=stat_lookup.get((int(m.match_id),aid),{})
+            home_hist={"gf":float(m.home_score_90),"ga":float(m.away_score_90)}
+            away_hist={"gf":float(m.away_score_90),"ga":float(m.home_score_90)}
+            for sk in STAT_TARGETS:
+                home_hist[sk+"_for"]=safe_float(hs.get(sk),np.nan)
+                home_hist[sk+"_against"]=safe_float(aws.get(sk),np.nan)
+                away_hist[sk+"_for"]=safe_float(aws.get(sk),np.nan)
+                away_hist[sk+"_against"]=safe_float(hs.get(sk),np.nan)
+            history[hid].append(home_hist)
+            history[aid].append(away_hist)
             comp_history[comp].append((float(m.home_score_90),float(m.away_score_90)))
 
     df=pd.DataFrame(records)
@@ -203,6 +257,46 @@ def main():
     df["v12_lambda_home"]=np.clip(boost_h.predict(Xh),.05,5.5)
     df["v12_lambda_away"]=np.clip(boost_a.predict(Xa),.05,5.5)
 
+    # V1.5: fixed 50/50 blend of Elo and Gradient Boosting probabilities.
+    # The blend weight is fixed in advance to avoid tuning on the holdout.
+    # (The Elo probabilities are assigned below; this section is completed after Elo fit.)
+
+    # Multi-market count models: separate Poisson boosting models for each side.
+    Xstat_h=np.column_stack([Xh,np.asarray([r["features_stat_home"] for r in records],dtype=float),
+                            np.asarray([r["features_stat_away"] for r in records],dtype=float)])
+    Xstat_a=np.column_stack([Xa,np.asarray([r["features_stat_away"] for r in records],dtype=float),
+                            np.asarray([r["features_stat_home"] for r in records],dtype=float)])
+    stat_model_metrics={}
+    for sk in STAT_TARGETS:
+        ysh=df[f"actual_{sk}_home"].to_numpy(dtype=float)
+        ysa=df[f"actual_{sk}_away"].to_numpy(dtype=float)
+        mh=train_mask & np.isfinite(ysh)
+        ma=train_mask & np.isfinite(ysa)
+        if mh.sum()<200 or ma.sum()<200:
+            stat_model_metrics[sk]={"status":"insufficient_data","train_home":int(mh.sum()),"train_away":int(ma.sum())}
+            continue
+        sh=HistGradientBoostingRegressor(loss="poisson",learning_rate=0.05,max_iter=140,
+            max_leaf_nodes=15,l2_regularization=3.0,min_samples_leaf=35,random_state=42)
+        sa=HistGradientBoostingRegressor(loss="poisson",learning_rate=0.05,max_iter=140,
+            max_leaf_nodes=15,l2_regularization=3.0,min_samples_leaf=35,random_state=42)
+        sh.fit(Xstat_h[mh],ysh[mh]); sa.fit(Xstat_a[ma],ysa[ma])
+        df[f"{sk}_lambda_home"]=np.clip(sh.predict(Xstat_h),0.05,45.0)
+        df[f"{sk}_lambda_away"]=np.clip(sa.predict(Xstat_a),0.05,45.0)
+        df[f"{sk}_lambda_total"]=df[f"{sk}_lambda_home"]+df[f"{sk}_lambda_away"]
+        add_stat_market_probabilities(df,sk,df[f"{sk}_lambda_total"].to_numpy())
+        mt=test_mask & np.isfinite(ysh) & np.isfinite(ysa)
+        actual_total=ysh+ysa
+        pred_total=df[f"{sk}_lambda_total"].to_numpy()
+        stat_model_metrics[sk]={"status":"ok","test_matches":int(mt.sum()),
+            "home_mae":float(mean_absolute_error(ysh[mt & test_mask],df.loc[mt,f"{sk}_lambda_home"])),
+            "away_mae":float(mean_absolute_error(ysa[mt & test_mask],df.loc[mt,f"{sk}_lambda_away"])),
+            "total_mae":float(mean_absolute_error(actual_total[mt],pred_total[mt]))}
+        for line in STAT_LINES[sk]:
+            suffix=str(line).replace(".","_")
+            p=df[f"{sk}_over_{suffix}"].to_numpy()[mt]
+            actual=(actual_total[mt]>line).astype(int)
+            stat_model_metrics[sk][f"over_{line}_brier"]=brier_binary(p,actual)
+            stat_model_metrics[sk][f"over_{line}_log_loss"]=float(log_loss(actual,np.clip(p,1e-8,1-1e-8),labels=[0,1]))
     for prefix in ["v10","v11","v12"]:
         p1=[];px=[];p2=[];o=[];u=[];b=[];nb=[]
         for lh,la in zip(df[f"{prefix}_lambda_home"],df[f"{prefix}_lambda_away"]):
@@ -253,27 +347,91 @@ def main():
     draw_factor=math.exp(float(minimize_scalar(elo_loss,bounds=(-3,1),method="bounded").x))
     ed=draw_factor*np.sqrt(strength); ep=np.column_stack([strength,ed,np.ones_like(strength)]); ep/=ep.sum(axis=1,keepdims=True)
     df["v14_p_home"]=ep[:,0]; df["v14_p_draw"]=ep[:,1]; df["v14_p_away"]=ep[:,2]
+    df["v15_lambda_home"]=df["v12_lambda_home"]; df["v15_lambda_away"]=df["v12_lambda_away"]
+    df["v15_p_home"]=0.5*df["v12_p_home"]+0.5*df["v14_p_home"]
+    df["v15_p_draw"]=0.5*df["v12_p_draw"]+0.5*df["v14_p_draw"]
+    df["v15_p_away"]=0.5*df["v12_p_away"]+0.5*df["v14_p_away"]
+    df["v15_over25_yes"]=df["v12_over25_yes"]; df["v15_btts_yes"]=df["v12_btts_yes"]
 
     test=df.loc[test_mask].copy()
-    for col in ["v13_lambda_home","v13_lambda_away","v13_p_home","v13_p_draw","v13_p_away","v13_over25_yes","v13_btts_yes","v14_p_home","v14_p_draw","v14_p_away"]:
+    for col in [c for c in df.columns if c.startswith(("v13_","v14_","v15_")) or
+                c.endswith(("_lambda_home","_lambda_away","_lambda_total")) or
+                any(c.startswith(sk+"_") for sk in STAT_TARGETS)]:
         test[col]=df.loc[test_mask,col].to_numpy()
     metrics={"dataset":"Openplay data-v0.1.0","scope":sorted(LEAGUES),"eligible_matches_after_warmup":int(len(df)),
              "train_matches":int(split),"test_matches":int(len(test)),
              "train_start":str(df.iloc[0].date),"train_end":str(df.iloc[split-1].date),
              "test_start":str(df.iloc[split].date),"test_end":str(df.iloc[-1].date),
-             "V1.0":metrics_for(test,"v10"),"V1.1_experimental":metrics_for(test,"v11"),"V1.2_gradient_boosting":metrics_for(test,"v12"), "V1.3_dixon_coles":metrics_for(test,"v13"), "V1.4_elo_1x2":{"matches":int(len(test)),"1x2_brier":float(np.mean(np.sum((test[["v14_p_home","v14_p_draw","v14_p_away"]].to_numpy()-np.eye(3)[np.where(test.actual.to_numpy()=="H",0,np.where(test.actual.to_numpy()=="D",1,2))])**2,axis=1))),"1x2_log_loss":float(log_loss(np.where(test.actual.to_numpy()=="H",0,np.where(test.actual.to_numpy()=="D",1,2)),test[["v14_p_home","v14_p_draw","v14_p_away"]].to_numpy(),labels=[0,1,2]))}}
+             "V1.0":metrics_for(test,"v10"),"V1.1_experimental":metrics_for(test,"v11"),"V1.2_gradient_boosting":metrics_for(test,"v12"), "V1.3_dixon_coles":metrics_for(test,"v13"), "V1.4_elo_1x2":{"matches":int(len(test)),"1x2_brier":float(np.mean(np.sum((test[["v14_p_home","v14_p_draw","v14_p_away"]].to_numpy()-np.eye(3)[np.where(test.actual.to_numpy()=="H",0,np.where(test.actual.to_numpy()=="D",1,2))])**2,axis=1))),"1x2_log_loss":float(log_loss(np.where(test.actual.to_numpy()=="H",0,np.where(test.actual.to_numpy()=="D",1,2)),test[["v14_p_home","v14_p_draw","v14_p_away"]].to_numpy(),labels=[0,1,2]))},
+             "V1.5_elo_gradient_ensemble":metrics_for(test,"v15"),"stat_models":stat_model_metrics}
     cal=[]
     for prefix in ["v10","v11","v12"]:
         cal += calibration_rows(test[f"{prefix}_over25_yes"],(test.actual_home_goals+test.actual_away_goals>=3),prefix+"_over2.5")
         cal += calibration_rows(test[f"{prefix}_btts_yes"],((test.actual_home_goals>0)&(test.actual_away_goals>0)),prefix+"_BTTS")
     cal += calibration_rows(test["v13_over25_yes"],(test.actual_home_goals+test.actual_away_goals>=3),"v13_over2.5")
     cal += calibration_rows(test["v13_btts_yes"],((test.actual_home_goals>0)&(test.actual_away_goals>0)),"v13_BTTS")
+    odds_path=Path(args.odds)
+    odds_summary={"status":"not_provided","message":"No verified bookmaker odds file supplied; ROI/CLV not calculated."}
+    if odds_path.exists() and odds_path.stat().st_size>0:
+        odds=pd.read_csv(odds_path)
+        required={"match_id","market","selection","odds"}
+        if not required.issubset(odds.columns):
+            raise ValueError(f"Odds file must contain columns: {sorted(required)}")
+        odds["match_id"]=pd.to_numeric(odds["match_id"],errors="coerce")
+        odds["odds"]=pd.to_numeric(odds["odds"],errors="coerce")
+        odds["market"]=odds["market"].astype(str).str.lower().str.strip()
+        odds["selection"]=odds["selection"].astype(str).str.lower().str.strip()
+        pred=test.set_index("match_id")
+        value_rows=[]
+        for q in odds.itertuples(index=False):
+            if pd.isna(q.match_id) or q.match_id not in pred.index or not np.isfinite(q.odds) or q.odds<=1:
+                continue
+            row=pred.loc[q.match_id]
+            market=q.market; sel=q.selection
+            p=np.nan; won=False; actual_label=""
+            if market=="1x2" and sel in {"home","draw","away"}:
+                p=float(row[{"home":"v15_p_home","draw":"v15_p_draw","away":"v15_p_away"}[sel]])
+                actual_label=str(row.actual).lower(); won=(actual_label==sel)
+            elif market in {"over25","under25","btts_yes","btts_no"}:
+                if market=="over25": p=float(row.v15_over25_yes); won=(row.actual_home_goals+row.actual_away_goals>=3)
+                elif market=="under25": p=1-float(row.v15_over25_yes); won=(row.actual_home_goals+row.actual_away_goals<3)
+                elif market=="btts_yes": p=float(row.v15_btts_yes); won=(row.actual_home_goals>0 and row.actual_away_goals>0)
+                else: p=1-float(row.v15_btts_yes); won=(row.actual_home_goals==0 or row.actual_away_goals==0)
+            else:
+                parts=market.rsplit("_",1)
+                if len(parts)==2 and parts[0] in STAT_TARGETS and sel in {"over","under"}:
+                    sk=parts[0]
+                    try: line=float(parts[1].replace("_","."))
+                    except Exception: continue
+                    suffix=str(line).replace(".","_")
+                    probcol=f"{sk}_{sel}_{suffix}"
+                    actual_total=row.get(f"actual_{sk}_home",np.nan)+row.get(f"actual_{sk}_away",np.nan)
+                    if probcol not in row.index or not np.isfinite(actual_total): continue
+                    p=float(row[probcol]); won=(actual_total>line) if sel=="over" else (actual_total<line)
+            if not np.isfinite(p) or p<=0 or p>=1: continue
+            fair=1.0/p; min_entry=1.03/p; ev=p*float(q.odds)-1.0
+            value_rows.append({"match_id":int(q.match_id),"date":row.date,"home_team":row.home_team,"away_team":row.away_team,
+                "market":market,"selection":sel,"bookmaker":getattr(q,"bookmaker","unknown"),
+                "odds":float(q.odds),"model_probability":p,"fair_odds":fair,"minimum_odds_3pct_edge":min_entry,
+                "expected_value":ev,"won":int(won),"value_bet":bool(float(q.odds)>=min_entry)})
+        value_df=pd.DataFrame(value_rows)
+        value_df.to_csv(OUT/"odds_evaluation.csv",index=False)
+        chosen=value_df[value_df.value_bet] if len(value_df) else value_df
+        if len(chosen):
+            profit=np.where(chosen.won.to_numpy()==1,chosen.odds.to_numpy()-1.0,-1.0)
+            odds_summary={"status":"evaluated","matched_odds_rows":int(len(value_df)),"qualifying_bets":int(len(chosen)),
+                "wins":int(chosen.won.sum()),"win_rate":float(chosen.won.mean()),
+                "flat_stake_profit_units":float(profit.sum()),"roi":float(profit.mean()),
+                "mean_expected_value":float(chosen.expected_value.mean())}
+        else:
+            odds_summary={"status":"evaluated_no_value_bets","matched_odds_rows":int(len(value_df)),"qualifying_bets":0}
+    metrics["odds_evaluation"]=odds_summary
     if Path(args.coverage).exists():
         cov=pd.read_csv(args.coverage)
         cov=cov[cov.comp.astype(str).isin(LEAGUES)]
         metrics["coverage_rows"]=cov.to_dict(orient="records")
     metrics["data_quality_note"]="Openplay coverage is incomplete; see coverage.csv and data_issues.csv upstream. This first run evaluates only matches with available match/event-derived team stats and a 5-match team warm-up."
-    metrics["not_in_scope"]=["corners/cards/fouls model calibration","lineups/injuries/referee effects","player props","Bet365 Spain odds/ROI/CLV"]
+    metrics["not_in_scope"]=["verified live Bet365 Spain feed and closing-line value (requires licensed provider/key)","lineups/injuries/referee effects","player props"]
     (OUT/"metrics.json").write_text(json.dumps(metrics,indent=2,default=str),encoding="utf-8")
     (OUT/"calibration.csv").write_text(pd.DataFrame(cal).to_csv(index=False),encoding="utf-8")
     cols=[c for c in df.columns if not c.startswith("features_")]
@@ -281,7 +439,8 @@ def main():
     # Save a compact, queryable database with the out-of-time forecasts and metrics.
     with sqlite3.connect(OUT/"football_analytics.sqlite") as con:
         test[cols].to_sql("predictions",con,if_exists="replace",index=False)
-        pd.DataFrame([{"model":"V1.0",**metrics["V1.0"]},{"model":"V1.1_experimental",**metrics["V1.1_experimental"]},{"model":"V1.2_gradient_boosting",**metrics["V1.2_gradient_boosting"]},{"model":"V1.3_dixon_coles",**metrics["V1.3_dixon_coles"]},{"model":"V1.4_elo_1x2",**metrics["V1.4_elo_1x2"]}]).to_sql("metrics",con,if_exists="replace",index=False)
+        pd.DataFrame([{"model":"V1.0",**metrics["V1.0"]},{"model":"V1.1_experimental",**metrics["V1.1_experimental"]},{"model":"V1.2_gradient_boosting",**metrics["V1.2_gradient_boosting"]},{"model":"V1.3_dixon_coles",**metrics["V1.3_dixon_coles"]},{"model":"V1.4_elo_1x2",**metrics["V1.4_elo_1x2"]},{"model":"V1.5_elo_gradient_ensemble",**metrics["V1.5_elo_gradient_ensemble"]}]).to_sql("metrics",con,if_exists="replace",index=False)
+        pd.DataFrame([{"market":k,**v} for k,v in stat_model_metrics.items()]).to_sql("stat_market_metrics",con,if_exists="replace",index=False)
         pd.DataFrame(cal).to_sql("calibration",con,if_exists="replace",index=False)
 
     def fmt(d):
@@ -311,13 +470,26 @@ def main():
 {fmt(metrics['V1.4_elo_1x2'])}
 - Factor de empate ajustado solo con entrenamiento: {draw_factor:.5f}
 
+## V1.5 — ensemble Elo + Gradient Boosting
+{fmt(metrics['V1.5_elo_gradient_ensemble'])}
+- Mezcla fija 50% Elo + 50% Gradient Boosting; peso no optimizado sobre el conjunto de prueba.
+
+## Multi-market models: shots, shots on target, corners, cards and fouls
+{json.dumps(stat_model_metrics,indent=2)}
+
+## Odds and value evaluation
+{json.dumps(odds_summary,indent=2)}
+- Odds CSV schema: match_id, market, selection, odds, bookmaker, captured_at.
+- Markets: 1x2 (home/draw/away), over25/under25, btts_yes/btts_no, plus shots_22_5, sot_8_5, corners_9_5, cards_4_5, fouls_22_5 with selection over/under.
+- A value bet requires estimated expected return >= 3% at the supplied price. This is a research threshold, not a guarantee.
+
 ## Interpretation
 Lower is better for MAE, Brier and log loss. This is a chronological holdout, not a random split. V1.1 is experimental and is not promoted automatically. Compare all three models and calibration; do not choose a winner from accuracy alone.
 
 ## Data and scope limitations
 {metrics['data_quality_note']}
 
-Not evaluated in this run: corners/cards/fouls calibration, referee/injury/lineup effects, player props, historical Bet365 Spain odds, ROI or CLV. No betting-value claims can be made from this report.
+Not evaluated unless odds.csv is supplied: bookmaker ROI/CLV. A CSV import allows verified Bet365 prices to be tested, but this workflow does not scrape Bet365 or invent prices. Current odds require a permitted provider/API credential.
 
 Openplay attribution: Noah Bair / Openplay. Source release: https://github.com/nlbair/openplay/releases/tag/data-v0.1.0
 """
