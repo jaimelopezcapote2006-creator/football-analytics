@@ -194,12 +194,53 @@ def main():
         df[f"{prefix}_over25_yes"]=o;df[f"{prefix}_under25_yes"]=u
         df[f"{prefix}_btts_yes"]=b;df[f"{prefix}_btts_no"]=nb
 
+    # V1.3 Dixon-Coles: fit rho on training dates only.
+    def dc_nll(rho):
+        loss=0.0
+        for row in df.loc[train_mask].itertuples(index=False):
+            g=dc_grid(row.v10_lambda_home,row.v10_lambda_away,float(rho))
+            loss-=math.log(max(1e-12,g[int(row.actual_home_goals),int(row.actual_away_goals)]))
+        return loss
+    dc_rho=float(minimize_scalar(dc_nll,bounds=(-0.15,0.15),method="bounded").x)
+    dch=[]; dcd=[]; dca=[]; dco=[]; dcb=[]
+    for row in df.itertuples(index=False):
+        g=dc_grid(row.v10_lambda_home,row.v10_lambda_away,dc_rho)
+        dch.append(float(np.tril(g,-1).sum())); dcd.append(float(np.trace(g))); dca.append(float(np.triu(g,1).sum()))
+        ov,_,bt,_=market_probs(g); dco.append(ov); dcb.append(bt)
+    df["v13_lambda_home"]=df["v10_lambda_home"]; df["v13_lambda_away"]=df["v10_lambda_away"]
+    df["v13_p_home"]=dch; df["v13_p_draw"]=dcd; df["v13_p_away"]=dca
+    df["v13_over25_yes"]=dco; df["v13_btts_yes"]=dcb
+    # V1.4 Elo snapshots: all matches on a date see pre-date ratings.
+    elo=defaultdict(lambda:1500.0); pre={}
+    for day, batch_df in matches.groupby("date",sort=True):
+        batch=list(batch_df.itertuples(index=False))
+        for m in batch: pre[int(m.match_id)]=(elo[int(m.home_team_id)],elo[int(m.away_team_id)])
+        for m in batch:
+            h=int(m.home_team_id); a=int(m.away_team_id); rh=elo[h]; ra=elo[a]
+            gd=abs(float(m.home_score_90)-float(m.away_score_90))
+            score=1.0 if m.home_score_90>m.away_score_90 else (0.5 if m.home_score_90==m.away_score_90 else 0.0)
+            exp=1.0/(1.0+10.0**(-((rh+65.0)-ra)/400.0))
+            change=20.0*(1.0+0.2*math.log1p(gd))*(score-exp)
+            elo[h]=rh+change; elo[a]=ra-change
+    eh=np.asarray([pre[int(mid)][0] for mid in df.match_id]); ea=np.asarray([pre[int(mid)][1] for mid in df.match_id])
+    strength=10.0**((eh+65.0-ea)/400.0)
+    yi=np.where(df.actual.to_numpy()=="H",0,np.where(df.actual.to_numpy()=="D",1,2))
+    def elo_loss(log_draw):
+        draw=math.exp(float(log_draw)); h=strength[train_mask]; d=draw*np.sqrt(h)
+        p=np.column_stack([h,d,np.ones_like(h)]); p/=p.sum(axis=1,keepdims=True)
+        return float(-np.log(np.clip(p[np.arange(len(p)),yi[train_mask]],1e-12,1)).sum())
+    draw_factor=math.exp(float(minimize_scalar(elo_loss,bounds=(-3,1),method="bounded").x))
+    ed=draw_factor*np.sqrt(strength); ep=np.column_stack([strength,ed,np.ones_like(strength)]); ep/=ep.sum(axis=1,keepdims=True)
+    df["v14_p_home"]=ep[:,0]; df["v14_p_draw"]=ep[:,1]; df["v14_p_away"]=ep[:,2]
+
     test=df.loc[test_mask].copy()
+    for col in ["v13_lambda_home","v13_lambda_away","v13_p_home","v13_p_draw","v13_p_away","v13_over25_yes","v13_btts_yes","v14_p_home","v14_p_draw","v14_p_away"]:
+        test[col]=df.loc[test_mask,col].to_numpy()
     metrics={"dataset":"Openplay data-v0.1.0","scope":sorted(LEAGUES),"eligible_matches_after_warmup":int(len(df)),
              "train_matches":int(split),"test_matches":int(len(test)),
              "train_start":str(df.iloc[0].date),"train_end":str(df.iloc[split-1].date),
              "test_start":str(df.iloc[split].date),"test_end":str(df.iloc[-1].date),
-             "V1.0":metrics_for(test,"v10"),"V1.1_experimental":metrics_for(test,"v11"),"V1.2_gradient_boosting":metrics_for(test,"v12")}
+             "V1.0":metrics_for(test,"v10"),"V1.1_experimental":metrics_for(test,"v11"),"V1.2_gradient_boosting":metrics_for(test,"v12"), "V1.3_dixon_coles":metrics_for(test,"v13"), "V1.4_elo_1x2":{"matches":int(len(test)),"1x2_brier":float(np.mean(np.sum((test[["v14_p_home","v14_p_draw","v14_p_away"]].to_numpy()-np.eye(3)[np.where(test.actual.to_numpy()=="H",0,np.where(test.actual.to_numpy()=="D",1,2))])**2,axis=1))),"1x2_log_loss":float(log_loss(np.where(test.actual.to_numpy()=="H",0,np.where(test.actual.to_numpy()=="D",1,2)),test[["v14_p_home","v14_p_draw","v14_p_away"]].to_numpy(),labels=[0,1,2]))}}
     cal=[]
     for prefix in ["v10","v11","v12"]:
         cal += calibration_rows(test[f"{prefix}_over25_yes"],(test.actual_home_goals+test.actual_away_goals>=3),prefix+"_over2.5")
@@ -219,7 +260,7 @@ def main():
     # Save a compact, queryable database with the out-of-time forecasts and metrics.
     with sqlite3.connect(OUT/"football_analytics.sqlite") as con:
         test[cols].to_sql("predictions",con,if_exists="replace",index=False)
-        pd.DataFrame([{"model":"V1.0",**metrics["V1.0"]},{"model":"V1.1_experimental",**metrics["V1.1_experimental"]},{"model":"V1.2_gradient_boosting",**metrics["V1.2_gradient_boosting"]}]).to_sql("metrics",con,if_exists="replace",index=False)
+        pd.DataFrame([{"model":"V1.0",**metrics["V1.0"]},{"model":"V1.1_experimental",**metrics["V1.1_experimental"]},{"model":"V1.2_gradient_boosting",**metrics["V1.2_gradient_boosting"]},{"model":"V1.3_dixon_coles",**metrics["V1.3_dixon_coles"]},{"model":"V1.4_elo_1x2",**metrics["V1.4_elo_1x2"]}]).to_sql("metrics",con,if_exists="replace",index=False)
         pd.DataFrame(cal).to_sql("calibration",con,if_exists="replace",index=False)
 
     def fmt(d):
@@ -237,6 +278,17 @@ def main():
 
 ## V1.1 — experimental fitted Poisson model
 {fmt(metrics['V1.1_experimental'])}
+
+## V1.2 — gradient boosting
+{fmt(metrics['V1.2_gradient_boosting'])}
+
+## V1.3 — Dixon-Coles
+{fmt(metrics['V1.3_dixon_coles'])}
+- rho ajustado solo con entrenamiento: {dc_rho:.5f}
+
+## V1.4 — Elo (solo 1X2)
+{fmt(metrics['V1.4_elo_1x2'])}
+- Factor de empate ajustado solo con entrenamiento: {draw_factor:.5f}
 
 ## Interpretation
 Lower is better for MAE, Brier and log loss. This is a chronological holdout, not a random split. V1.1 is experimental and is not promoted automatically. Compare all three models and calibration; do not choose a winner from accuracy alone.
