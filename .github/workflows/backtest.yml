@@ -42,6 +42,8 @@ jobs:
         run: python src/open_matchday_ingest.py
       - name: Run xG-enhanced challenger with temporal validation
         run: python src/xg_enhanced_backtest.py
+      - name: Generate upcoming match predictions
+        run: python src/predict_upcoming.py
       - name: Fetch optional EU bookmaker odds snapshot
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
