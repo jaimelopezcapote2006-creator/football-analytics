@@ -163,7 +163,8 @@ def main():
    rh,ra=elo[hid],elo[aid]; score=1. if x.ft_home>x.ft_away else (.5 if x.ft_home==x.ft_away else 0.)
    exp=1/(1+10**(-((rh+65-ra)/400))); change=20*(1+.2*math.log1p(abs(float(x.ft_home)-float(x.ft_away))))*(score-exp)
    elo[hid]=rh+change; elo[aid]=ra-change
-   league_hist[str(x.league)].append((float(x.ft_home),float(x.ft_away)))
+   league_code={"Premier League":"eng","La Liga":"esp","Bundesliga":"ger","Serie A":"ita","Ligue 1":"fra"}.get(str(x.league),str(x.league))
+   league_hist[league_code].append((float(x.ft_home),float(x.ft_away)))
  out=[]
  fixtures["date"]=pd.to_datetime(fixtures.date,errors="coerce")
  for x in fixtures.sort_values("date").itertuples(index=False):
