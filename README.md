@@ -1,6 +1,6 @@
 # Football Analytics — research pipeline
 
-This repository runs a reproducible, chronological football forecasting backtest. It does **not** claim betting profitability or provide bookmaker odds.
+This repository runs a reproducible, chronological football forecasting backtest. It does **not** claim betting profitability or scrape bookmaker prices; it can evaluate verified odds supplied in the documented CSV format.
 
 ## Data
 - Openplay release `data-v0.1.0`: https://github.com/nlbair/openplay/releases/tag/data-v0.1.0
