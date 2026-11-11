@@ -196,6 +196,8 @@ def main():
         df[f"{prefix}_btts_yes"]=b;df[f"{prefix}_btts_no"]=nb
 
     # V1.3 Dixon-Coles: fit rho on training dates only.
+    # Import local defensivo para evitar problemas de resolución del import global en runners.
+    from scipy.optimize import minimize_scalar
     def dc_nll(rho):
         loss=0.0
         for row in df.loc[train_mask].itertuples(index=False):
