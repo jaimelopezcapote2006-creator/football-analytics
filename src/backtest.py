@@ -204,6 +204,8 @@ def main():
     for prefix in ["v10","v11","v12"]:
         cal += calibration_rows(test[f"{prefix}_over25_yes"],(test.actual_home_goals+test.actual_away_goals>=3),prefix+"_over2.5")
         cal += calibration_rows(test[f"{prefix}_btts_yes"],((test.actual_home_goals>0)&(test.actual_away_goals>0)),prefix+"_BTTS")
+    cal += calibration_rows(test["v13_over25_yes"],(test.actual_home_goals+test.actual_away_goals>=3),"v13_over2.5")
+    cal += calibration_rows(test["v13_btts_yes"],((test.actual_home_goals>0)&(test.actual_away_goals>0)),"v13_BTTS")
     if Path(args.coverage).exists():
         cov=pd.read_csv(args.coverage)
         cov=cov[cov.comp.astype(str).isin(LEAGUES)]
