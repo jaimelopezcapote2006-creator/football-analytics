@@ -59,13 +59,21 @@ def stat_feature_vector(home_hist, away_hist):
         ])
     return out
 
+def add_price_columns(frame, probability_column):
+    p=np.clip(frame[probability_column].astype(float),1e-8,1-1e-8)
+    frame[probability_column+"_fair_odds"]=1.0/p
+    frame[probability_column+"_min_odds_3pct_edge"]=1.03/p
+
 def add_stat_market_probabilities(frame, stat, total_lambda):
     for line in STAT_LINES[stat]:
         suffix=str(line).replace(".","_")
         over=f"{stat}_over_{suffix}"
+        under=f"{stat}_under_{suffix}"
         prob=np.clip(poisson.sf(int(math.floor(line)),np.maximum(0.01,total_lambda)),0,1)
         frame[over]=prob
-        frame[f"{stat}_under_{suffix}"]=1.0-prob
+        frame[under]=1.0-prob
+        add_price_columns(frame,over)
+        add_price_columns(frame,under)
 
 def score_probs(lh, la):
     h=np.arange(MAX_GOALS+1)
@@ -297,6 +305,12 @@ def main():
             actual=(actual_total[mt]>line).astype(int)
             stat_model_metrics[sk][f"over_{line}_brier"]=brier_binary(p,actual)
             stat_model_metrics[sk][f"over_{line}_log_loss"]=float(log_loss(actual,np.clip(p,1e-8,1-1e-8),labels=[0,1]))
+            train_total=(ysh+ysa)[train_mask & np.isfinite(ysh) & np.isfinite(ysa)]
+            base_rate=float(np.mean(train_total>line))
+            base_p=np.full(len(actual),base_rate)
+            stat_model_metrics[sk][f"over_{line}_baseline_brier"]=brier_binary(base_p,actual)
+            stat_model_metrics[sk][f"over_{line}_baseline_log_loss"]=float(log_loss(actual,np.clip(base_p,1e-8,1-1e-8),labels=[0,1]))
+            stat_model_metrics[sk][f"over_{line}_brier_skill"]=float(1.0-brier_binary(p,actual)/max(1e-12,brier_binary(base_p,actual)))
     for prefix in ["v10","v11","v12"]:
         p1=[];px=[];p2=[];o=[];u=[];b=[];nb=[]
         for lh,la in zip(df[f"{prefix}_lambda_home"],df[f"{prefix}_lambda_away"]):
@@ -352,6 +366,13 @@ def main():
     df["v15_p_draw"]=0.5*df["v12_p_draw"]+0.5*df["v14_p_draw"]
     df["v15_p_away"]=0.5*df["v12_p_away"]+0.5*df["v14_p_away"]
     df["v15_over25_yes"]=df["v12_over25_yes"]; df["v15_btts_yes"]=df["v12_btts_yes"]
+    for pc in ["v15_p_home","v15_p_draw","v15_p_away","v15_over25_yes","v15_btts_yes"]:
+        add_price_columns(df,pc)
+    add_price_columns(df,"v15_over25_yes")
+    df["v15_under25_yes"]=1.0-df["v15_over25_yes"]
+    df["v15_btts_no"]=1.0-df["v15_btts_yes"]
+    add_price_columns(df,"v15_under25_yes")
+    add_price_columns(df,"v15_btts_no")
 
     test=df.loc[test_mask].copy()
     for col in [c for c in df.columns if c.startswith(("v13_","v14_","v15_")) or
