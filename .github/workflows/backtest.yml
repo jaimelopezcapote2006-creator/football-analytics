@@ -32,11 +32,16 @@ jobs:
           BASE="https://github.com/nlbair/openplay/releases/download/data-v0.1.0"
           curl -fL --retry 3 "$BASE/matches.parquet" -o data/matches.parquet
           curl -fL --retry 3 "$BASE/team_match_stats.parquet" -o data/team_match_stats.parquet
+          curl -fL --retry 3 "$BASE/player_match_stats.parquet" -o data/player_match_stats.parquet
           curl -fL --retry 3 "$BASE/coverage.csv" -o data/coverage.csv
           curl -fL --retry 3 "$BASE/data_issues.csv" -o data/data_issues.csv
           sha256sum data/*
       - name: Run chronological model fitting and backtest
         run: python src/backtest.py
+      - name: Ingest current 2026/27 results and fixtures
+        run: python src/open_matchday_ingest.py
+      - name: Run xG-enhanced challenger with temporal validation
+        run: python src/xg_enhanced_backtest.py
       - name: Upload aggregate results and SQLite database
         uses: actions/upload-artifact@v4
         with:
