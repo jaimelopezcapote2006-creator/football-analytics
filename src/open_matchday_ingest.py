@@ -23,7 +23,7 @@ for folder,name in LEAGUES.items():
         missing=[c for c in required if c not in df.columns]
         if missing: raise ValueError(f"missing columns {missing}")
         df["date"]=pd.to_datetime(df["date"],errors="coerce")
-        for c in ["home_shots","away_shots","home_sot","away_sot","home_fouls","away_fouls",
+        for c in ["home_shots","away_shots","home_target","away_target","home_fouls","away_fouls",
                   "home_corners","away_corners","home_yellow","away_yellow","home_red","away_red"]:
             if c not in df: df[c]=float("nan")
         frames.append(df)
