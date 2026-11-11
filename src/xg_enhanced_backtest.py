@@ -228,6 +228,4 @@ def main():
       "warning":"Research challenger only; no production model is changed. Both feature sets and both score-grid variants are compared on the same untouched chronological test. Dixon-Coles rho is fitted on validation forecasts only. xG coverage is partial."}
     (OUT/"xg_enhanced_metrics.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
     print(json.dumps(result,indent=2))
-    (OUT/"xg_enhanced_metrics.json").write_text(json.dumps(result,indent=2),encoding="utf-8")
-    print(json.dumps(result,indent=2))
 if __name__=="__main__": main()
