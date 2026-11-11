@@ -29,7 +29,7 @@ The run creates:
 These are uploaded as a GitHub Actions artifact named `football-analytics-results`. The workflow does not commit raw datasets or model outputs into git.
 
 ## Metrics
-1X2 multiclass Brier and log loss; goal MAE; O/U 2.5 and BTTS Brier/log loss; MAE and Over/Under Brier/log loss for shots, shots on target, corners, cards and fouls. All models use a chronological holdout. If `data/odds.csv` contains verified bookmaker prices, the pipeline calculates fair odds, minimum entry odds for a 3% expected edge, flat-stake ROI and hit rate on matched test fixtures. It does not fabricate prices.
+1X2 multiclass Brier and log loss; goal MAE; O/U 2.5 and BTTS Brier/log loss; MAE and Over/Under Brier/log loss for shots, shots on target, corners, cards and fouls. All models use a chronological holdout. If `data/odds.csv` contains verified bookmaker prices, the pipeline calculates fair odds and minimum entry odds for a 3% expected edge for every supported market, then calculates flat-stake ROI and hit rate on matched test fixtures. The prediction export includes fair-odds columns even before a bookmaker price is supplied. It does not fabricate prices.
 
 ### Odds import format
 Add one row per match and selection to `data/odds.csv` with columns `match_id,market,selection,odds,bookmaker,captured_at`. Example market keys: `1x2` with `home/draw/away`; `over25`, `under25`, `btts_yes`, `btts_no`; and `shots_22.5`, `sot_8.5`, `corners_9.5`, `cards_4.5`, `fouls_22.5` with `over/under`. Only use odds whose source, bookmaker and capture time are known. The current pipeline imports odds; it does not scrape Bet365.
