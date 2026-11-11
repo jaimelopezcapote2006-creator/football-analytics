@@ -46,3 +46,10 @@ This is a first reproducible baseline, not the final multi-market model. It does
 - Additional challenger outputs: `results/xg_enhanced_metrics.json`, `results/xg_enhanced_predictions.csv`.
 - Open Matchday is provided for non-commercial informational use; provider rights and source attribution remain applicable. Do not redistribute commercially.
 - A model is only promoted if it beats simple baselines on a genuinely out-of-time test and remains calibrated. More training rows alone are not evidence of improvement.
+
+
+## Optional odds snapshot (free tier)
+- `src/fetch_eu_odds.py` can pull current EU bookmaker snapshots for 1X2 and totals from The Odds API.
+- To enable it, add a GitHub Actions repository secret named `ODDS_API_KEY`. Without it, the workflow records a clear `not_configured` audit and continues.
+- This is an EU market-consensus feed, **not Bet365 Spain**. The free feed's bookmaker coverage does not provide Bet365 Spain, and these snapshots are not yet converted into historical match-id rows for ROI. Bet365 prices must still be imported separately from verified captures.
+- The provider advertises a free allowance; check current plan limits before enabling frequent pulls. API usage is reported in `results/odds_api_audit.json`.
