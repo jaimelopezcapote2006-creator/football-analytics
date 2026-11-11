@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.stats import poisson
+from scipy.optimize import minimize_scalar
 from sklearn.linear_model import PoissonRegressor
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, log_loss
