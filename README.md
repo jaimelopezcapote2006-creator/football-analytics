@@ -36,3 +36,13 @@ Add one row per match and selection to `data/odds.csv` with columns `match_id,ma
 
 ## Important limitations
 This is a first reproducible baseline, not the final multi-market model. It does not currently model lineups/injuries, referee effects or player props. Historical Bet365 prices and CLV require a licensed source or verified odds imports. The dataset has incomplete match coverage and known issues; the report must be read with its coverage audit. Do not use cup or cross-division matches to infer professional-league performance.
+
+
+## New research phase: xG and current-season data
+- The workflow additionally downloads Openplay `player_match_stats.parquet` and aggregates player xG/npxG and shot-related measures to team-match level.
+- `src/xg_enhanced_backtest.py` builds richer pre-match features: rolling 5/10/20-match goals, xG, shots, shots on target, corners, fouls, variability, rest days and Elo strength. It compares an Elo/goals-only challenger against an xG/stat challenger on a validation period, selects only on validation, then reports results on a later untouched test period. It does not automatically replace the existing model.
+- `src/open_matchday_ingest.py` downloads the current 2026/27 top-five-league results and fixture CSVs daily, writes an audit, and preserves missing statistics as null. These data are a separate current-season feed; they are not silently mixed into the Openplay historical training set because the provider IDs/schema differ and coverage is partial.
+- Current-season files: `results/open_matchday_2627.csv`, `results/upcoming_fixtures_2627.csv`, `results/open_matchday_audit.json`.
+- Additional challenger outputs: `results/xg_enhanced_metrics.json`, `results/xg_enhanced_predictions.csv`.
+- Open Matchday is provided for non-commercial informational use; provider rights and source attribution remain applicable. Do not redistribute commercially.
+- A model is only promoted if it beats simple baselines on a genuinely out-of-time test and remains calibrated. More training rows alone are not evidence of improvement.
