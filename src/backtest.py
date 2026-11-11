@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import poisson
 from sklearn.linear_model import PoissonRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, log_loss
 
 ROOT = Path("data")
@@ -147,6 +148,7 @@ def main():
                     "actual":"H" if hg>ag else ("D" if hg==ag else "A"),
                     "v10_lambda_home":v10_h,"v10_lambda_away":v10_a,
                     "v11_lambda_home":np.nan,"v11_lambda_away":np.nan,
+                    "v12_lambda_home":np.nan,"v12_lambda_away":np.nan,
                     "features_home":xh,"features_away":xa})
         # Update histories only after every fixture on this date has been forecast.
         for m in day_rows:
@@ -172,8 +174,17 @@ def main():
     model_a=PoissonRegressor(alpha=0.15,max_iter=500).fit(Xa[train_mask],ya[train_mask])
     df["v11_lambda_home"]=np.clip(model_h.predict(Xh),.05,5.5)
     df["v11_lambda_away"]=np.clip(model_a.predict(Xa),.05,5.5)
+    # V1.2: nonlinear Poisson boosting, fitted on the same chronological training dates.
+    # It is a challenger, not an automatically promoted replacement.
+    boost_h=HistGradientBoostingRegressor(loss="poisson",learning_rate=0.06,max_iter=180,
+        max_leaf_nodes=15,l2_regularization=2.0,min_samples_leaf=40,random_state=42)
+    boost_a=HistGradientBoostingRegressor(loss="poisson",learning_rate=0.06,max_iter=180,
+        max_leaf_nodes=15,l2_regularization=2.0,min_samples_leaf=40,random_state=42)
+    boost_h.fit(Xh[train_mask],yh[train_mask]); boost_a.fit(Xa[train_mask],ya[train_mask])
+    df["v12_lambda_home"]=np.clip(boost_h.predict(Xh),.05,5.5)
+    df["v12_lambda_away"]=np.clip(boost_a.predict(Xa),.05,5.5)
 
-    for prefix in ["v10","v11"]:
+    for prefix in ["v10","v11","v12"]:
         p1=[];px=[];p2=[];o=[];u=[];b=[];nb=[]
         for lh,la in zip(df[f"{prefix}_lambda_home"],df[f"{prefix}_lambda_away"]):
             ph,pd_,pa,grid=score_probs(lh,la)
@@ -188,9 +199,9 @@ def main():
              "train_matches":int(split),"test_matches":int(len(test)),
              "train_start":str(df.iloc[0].date),"train_end":str(df.iloc[split-1].date),
              "test_start":str(df.iloc[split].date),"test_end":str(df.iloc[-1].date),
-             "V1.0":metrics_for(test,"v10"),"V1.1_experimental":metrics_for(test,"v11")}
+             "V1.0":metrics_for(test,"v10"),"V1.1_experimental":metrics_for(test,"v11"),"V1.2_gradient_boosting":metrics_for(test,"v12")}
     cal=[]
-    for prefix in ["v10","v11"]:
+    for prefix in ["v10","v11","v12"]:
         cal += calibration_rows(test[f"{prefix}_over25_yes"],(test.actual_home_goals+test.actual_away_goals>=3),prefix+"_over2.5")
         cal += calibration_rows(test[f"{prefix}_btts_yes"],((test.actual_home_goals>0)&(test.actual_away_goals>0)),prefix+"_BTTS")
     if Path(args.coverage).exists():
@@ -206,7 +217,7 @@ def main():
     # Save a compact, queryable database with the out-of-time forecasts and metrics.
     with sqlite3.connect(OUT/"football_analytics.sqlite") as con:
         test[cols].to_sql("predictions",con,if_exists="replace",index=False)
-        pd.DataFrame([{"model":"V1.0",**metrics["V1.0"]},{"model":"V1.1_experimental",**metrics["V1.1_experimental"]}]).to_sql("metrics",con,if_exists="replace",index=False)
+        pd.DataFrame([{"model":"V1.0",**metrics["V1.0"]},{"model":"V1.1_experimental",**metrics["V1.1_experimental"]},{"model":"V1.2_gradient_boosting",**metrics["V1.2_gradient_boosting"]}]).to_sql("metrics",con,if_exists="replace",index=False)
         pd.DataFrame(cal).to_sql("calibration",con,if_exists="replace",index=False)
 
     def fmt(d):
@@ -226,7 +237,7 @@ def main():
 {fmt(metrics['V1.1_experimental'])}
 
 ## Interpretation
-Lower is better for MAE, Brier and log loss. This is a chronological holdout, not a random split. V1.1 is experimental and is not promoted automatically. Compare both models and calibration; do not choose a winner from accuracy alone.
+Lower is better for MAE, Brier and log loss. This is a chronological holdout, not a random split. V1.1 is experimental and is not promoted automatically. Compare all three models and calibration; do not choose a winner from accuracy alone.
 
 ## Data and scope limitations
 {metrics['data_quality_note']}
