@@ -42,6 +42,10 @@ jobs:
         run: python src/open_matchday_ingest.py
       - name: Run xG-enhanced challenger with temporal validation
         run: python src/xg_enhanced_backtest.py
+      - name: Fetch optional EU bookmaker odds snapshot
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python src/fetch_eu_odds.py
       - name: Upload aggregate results and SQLite database
         uses: actions/upload-artifact@v4
         with:
