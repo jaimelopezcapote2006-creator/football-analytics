@@ -142,9 +142,9 @@ def main():
   hit=get_close_matches(q,keys,n=1,cutoff=.82)
   if hit: mapping[nm]=name_to_id[hit[0]]
   else: unresolved.add(nm)
- mapped=0; unmapped=[]
+ mapped=0; unmapped=[]; prospective=[]
  cur["date"]=pd.to_datetime(cur.date,errors="coerce")
- # Replay current season results chronologically, updating only after all games on each date.
+ # Rolling-origin prospective test: each current-season match is predicted before its date's results update history.
  for day,bdf in cur.dropna(subset=["ft_home","ft_away","date"]).sort_values("date").groupby("date",sort=True):
   batch=[]
   for x in bdf.itertuples(index=False):
@@ -153,6 +153,26 @@ def main():
    batch.append(x)
   for x in batch:
    hid=mapping[x.home]; aid=mapping[x.away]
+   h=list(hist[hid]); a=list(hist[aid])
+   if len(h)>=MIN_GAMES and len(a)>=MIN_GAMES:
+    code={"Premier League":"eng","La Liga":"esp","Bundesliga":"ger","Serie A":"ita","Ligue 1":"fra"}.get(str(x.league),"")
+    ch=list(league_hist[code]); lh=float(np.mean([z[0] for z in ch])) if len(ch)>=15 else 1.45
+    la=float(np.mean([z[1] for z in ch])) if len(ch)>=15 else 1.2
+    if winner=="xg_stats_elo": vec=np.asarray(feats(h,a,day,elo[hid],elo[aid],lh,la),float).reshape(1,-1)
+    else:
+     fv=[]
+     for hh in (h,a):
+      for n in (5,10,20):
+       for k,d in (("gf",1.3),("ga",1.3)): fv.append(mean(hh,k,n,d))
+     fv += [elo[hid],elo[aid],elo[hid]-elo[aid],lh,la]
+     vec=np.asarray(fv,float).reshape(1,-1)
+    ph=float(np.clip(mh.predict(vec)[0],.05,5.5)); pa=float(np.clip(ma.predict(vec)[0],.05,5.5))
+    p1,px,p2,ov,un,bt=probs(ph,pa); b1,bx,b2,_,_,_=probs(lh,la)
+    actual="H" if x.ft_home>x.ft_away else ("D" if x.ft_home==x.ft_away else "A")
+    prospective.append({"date":day.date().isoformat(),"league":x.league,"home":x.home,"away":x.away,
+      "actual_home_goals":int(x.ft_home),"actual_away_goals":int(x.ft_away),"actual":actual,
+      "lambda_home":ph,"lambda_away":pa,"p_home":p1,"p_draw":px,"p_away":p2,
+      "baseline_lambda_home":lh,"baseline_lambda_away":la,"baseline_p_home":b1,"baseline_p_draw":bx,"baseline_p_away":b2})
    hs={"xg":np.nan,"shots":finite(getattr(x,"home_shots",np.nan)),"sot":finite(getattr(x,"home_target",np.nan)),
        "corners":finite(getattr(x,"home_corners",np.nan)),"fouls":finite(getattr(x,"home_fouls",np.nan))}
    aws={"xg":np.nan,"shots":finite(getattr(x,"away_shots",np.nan)),"sot":finite(getattr(x,"away_target",np.nan)),
@@ -165,6 +185,23 @@ def main():
    elo[hid]=rh+change; elo[aid]=ra-change
    league_code={"Premier League":"eng","La Liga":"esp","Bundesliga":"ger","Serie A":"ita","Ligue 1":"fra"}.get(str(x.league),str(x.league))
    league_hist[league_code].append((float(x.ft_home),float(x.ft_away)))
+ # Report a genuine current-season rolling-origin test against a simple competition-average Poisson baseline.
+ testdf=pd.DataFrame(prospective)
+ if len(testdf):
+  actual_idx=np.where(testdf.actual.to_numpy()=="H",0,np.where(testdf.actual.to_numpy()=="D",1,2))
+  onehot=np.eye(3)[actual_idx]
+  model_p=testdf[["p_home","p_draw","p_away"]].to_numpy()
+  base_p=testdf[["baseline_p_home","baseline_p_draw","baseline_p_away"]].to_numpy()
+  current_metrics={"matches":int(len(testdf)),
+   "model_total_goals_mae":float(mean_absolute_error(testdf.actual_home_goals+testdf.actual_away_goals,testdf.lambda_home+testdf.lambda_away)),
+   "league_average_total_goals_mae":float(mean_absolute_error(testdf.actual_home_goals+testdf.actual_away_goals,testdf.baseline_lambda_home+testdf.baseline_lambda_away)),
+   "model_1x2_brier":float(np.mean(np.sum((model_p-onehot)**2,axis=1))),
+   "league_average_1x2_brier":float(np.mean(np.sum((base_p-onehot)**2,axis=1))),
+   "model_1x2_log_loss":float(log_loss(actual_idx,model_p,labels=[0,1,2])),
+   "league_average_1x2_log_loss":float(log_loss(actual_idx,base_p,labels=[0,1,2]))}
+  testdf.to_csv(OUT/"current_season_rolling_test.csv",index=False)
+ else: current_metrics={"matches":0,"warning":"No current-season fixtures had a verified team-ID mapping and sufficient history."}
+ (OUT/"current_season_rolling_metrics.json").write_text(json.dumps(current_metrics,indent=2),encoding="utf-8")
  out=[]
  fixtures["date"]=pd.to_datetime(fixtures.date,errors="coerce")
  for x in fixtures.sort_values("date").itertuples(index=False):
@@ -221,6 +258,7 @@ def main():
        "value_3pct_edge":bool(price_now>=1.03*price(p)),"captured_at":q.get("captured_at","")})
  pd.DataFrame(value_rows).to_csv(OUT/"upcoming_value_candidates.csv",index=False)
  audit={"historical_training_rows":len(df),"validation_choice_mae":choices,"selected_model":winner,
+        "current_season_rolling_test":current_metrics,
         "historical_teams":len(name_to_id),"current_results":len(cur),"current_results_mapped":mapped,
         "current_team_mapping_unresolved":sorted(set(unmapped)|unresolved),
         "fixtures":len(fixtures),"ready_predictions":int((result.status=="ready").sum()),
